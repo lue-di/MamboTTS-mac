@@ -1,0 +1,36 @@
+# 引擎运行环境依赖（仅推理所需，由 install_engine_macos.py 自动安装到 GPT-SoVITS/runtime）
+# 基于上游 GPT-SoVITS 20250606v2pro 的 requirements.txt 精简：
+# 去掉训练/WebUI/ASR（gradio、funasr、faster-whisper、tensorboard 等）与日/韩语前端
+# （pyopenjtalk、g2pk2、python_mecab_ko 需本地编译且曼波场景用不到）。
+# torch/torchaudio 由安装器按 CPU 架构单独安装，不在此列出。
+numpy<2.0
+scipy
+librosa==0.10.2
+numba
+soundfile
+matplotlib
+pytorch-lightning>=2.4
+ffmpeg-python
+onnxruntime
+tqdm
+cn2an
+pypinyin
+g2p_en
+sentencepiece
+transformers>=4.43,<=4.50
+peft<0.16
+chardet
+PyYAML
+psutil
+jieba_fast
+jieba
+split-lang
+fast_langdetect>=0.3.1
+wordsegment
+rotary_embedding_torch
+ToJyutping
+opencc
+x_transformers
+torchmetrics<=1.5
+pydantic<=2.10.6
+fastapi[standard]>=0.115.2

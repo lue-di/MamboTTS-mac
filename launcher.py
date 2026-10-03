@@ -11,12 +11,13 @@ import subprocess
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QTextEdit, QMessageBox, QFrame, QDialog, QRadioButton
+    QProgressBar, QTextEdit, QMessageBox, QFrame
 )
 from PySide6.QtCore import QThread, Signal
 
 from theme import THEME, header_qss
-from install_engine import GPU_PACKAGES
+from run_engine import runtime_python
+
 
 
 # ============================================================
@@ -33,149 +34,35 @@ INSTALL_MARKER = ".mambo_install_ok"
 def is_installed():
     """
     判定引擎是否已安装：
-    - 核心文件存在（api.py + runtime/python.exe）
+    - 核心文件存在（api.py + runtime/bin/python 解释器）
     - 且满足其一：存在安装完成标记（新安装）/ runtime 内含 torch（老安装兼容）
 
     设计约束：
     1. 不能把 models/ 纳入判定——整合包不含曼波模型，模型缺失走安装流程
        会形成「装完依旧未安装→反复下载 8GB」的死循环；模型缺失由
        run_engine.preflight_check 在引擎启动阶段报错（GUI 日志可见）。
-    2. 半途中断的解压可能留下 api.py + python.exe 但缺 torch，
+    2. 半途中断的解压可能留下 api.py + python 但缺依赖，
        用标记/torch 双重校验识别「半成品」。
     """
     base = _project_dir()
     gsv_dir = os.path.join(base, "GPT-SoVITS")
     api_py = os.path.join(gsv_dir, "api.py")
-    runtime_python = os.path.join(gsv_dir, "runtime", "python.exe")
-    if not (os.path.exists(api_py) and os.path.exists(runtime_python)):
+    if not (os.path.exists(api_py) and os.path.exists(runtime_python(gsv_dir))):
         return False
     if os.path.exists(os.path.join(gsv_dir, INSTALL_MARKER)):
         return True
-    # 老安装（标记机制引入前完成）：用 runtime 内 torch 目录作为完整性代理
-    torch_dir = os.path.join(gsv_dir, "runtime", "Lib", "site-packages", "torch")
-    return os.path.isdir(torch_dir)
+    # 安装器始终写标记；无标记即半成品（依赖/模型未装完），重新走安装补齐
+    return False
+
+
+def _mac_download_gb():
+    """macOS 安装的下载量估算：模型 + 依赖（torch 等约 1GB）+ 源码"""
+    from install_engine_macos import TOTAL_DOWNLOAD_BYTES
+    return (TOTAL_DOWNLOAD_BYTES + 1.0 * 1024 ** 3) / (1024 ** 3)
 
 
 # ============================================================
-# 显卡型号选择对话框
-# ============================================================
-
-def detect_gpu_type():
-    """用 nvidia-smi 探测本机 NVIDIA 显卡，返回建议的整合包类型。
-
-    命中 RTX 50 系 → 'nvidia50'，其余 NVIDIA → 'general'；
-    探测失败（无 nvidia-smi/无 A 卡等）返回 None，交由默认值兜底。"""
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            stderr=subprocess.DEVNULL, timeout=6,
-        ).decode("utf-8", "replace")
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if re.search(r"RTX\s*50\d0|50\d0\s+Ti|B\d\d\d", out, re.IGNORECASE):
-        return "nvidia50"
-    if "NVIDIA" in out or "RTX" in out or "GTX" in out:
-        return "general"
-    return None
-
-
-class GpuSelectionDialog(QDialog):
-    """让用户选择显卡型号，决定下载哪个整合包"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("选择显卡型号")
-        # 不用 setFixedSize：高 DPI 缩放下固定尺寸会裁切文案，最小尺寸 + 布局自适应更安全
-        self.setMinimumSize(520, 380)
-        self.resize(520, 400)
-        # 默认预选；探测到本机显卡后自动选中更贴合的档位（仍可手动改）。
-        # 探测失败（无 nvidia-smi / 核显 / AMD）时默认 general 而非 nvidia50：
-        # general 兼容面更大，避免 30/40 系或无卡用户被推错 50 系专用包
-        detected = detect_gpu_type()
-        self._gpu_type = detected or "general"
-        self._build_ui(default_gpu=detected)
-
-    def _build_ui(self, default_gpu=None):
-        self.setStyleSheet(header_qss())
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(24, 24, 24, 24)
-
-        title = QLabel("请选择您的显卡型号")
-        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']};")
-        layout.addWidget(title)
-
-        n50 = GPU_PACKAGES["nvidia50"]
-        gen = GPU_PACKAGES["general"]
-        n50_gb = n50["size_bytes"] / (1024 ** 3)
-        gen_gb = gen["size_bytes"] / (1024 ** 3)
-        # 与 install_engine 磁盘预检同一公式（整包 ×3.6 含解压产物），
-        # 文案随实际包大小自动更新，不再写死数字
-        need_gb = max(n50["size_bytes"], gen["size_bytes"]) * 3.6 / (1024 ** 3)
-
-        desc = QLabel(
-            "不同显卡需要下载对应的 GPT-SoVITS 整合包，选错可能导致无法正常推理。\n"
-            f"两种整合包体积分别约 {n50_gb:.1f}GB / {gen_gb:.1f}GB，安装前请确认\n"
-            f"磁盘剩余空间 ≥ {need_gb:.0f}GB（含下载与解压产物）且网络畅通。"
-        )
-        desc.setStyleSheet(f"color: {THEME['dim']}; font-size: 12px;")
-        layout.addWidget(desc)
-
-        self.rb_nvidia50 = QRadioButton(
-            f"NVIDIA 50 系显卡 (RTX 5070 / 5080 / 5090 等) —— 约 {n50_gb:.1f}GB"
-        )
-        self.rb_other = QRadioButton(
-            f"NVIDIA 30 系 / 入门 40 系显卡 (RTX 3060 / 4060 等) —— 约 {gen_gb:.1f}GB"
-        )
-        # 按探测结果预选（探测失败默认 general 兼容包），并明确告知用户
-        self.rb_nvidia50.setChecked(self._gpu_type == "nvidia50")
-        self.rb_other.setChecked(self._gpu_type == "general")
-        layout.addWidget(self.rb_nvidia50)
-        layout.addWidget(self.rb_other)
-
-        if default_gpu:
-            hint = QLabel("● 已通过 nvidia-smi 自动识别并预选，如与实际不符可手动改。")
-            hint.setStyleSheet(f"color: {THEME['muted']}; font-size: 12px;")
-        else:
-            hint = QLabel("○ 未能自动识别显卡，请确认型号后手动选择。")
-            hint.setStyleSheet(f"color: {THEME['muted']}; font-size: 12px;")
-        layout.addWidget(hint)
-
-        layout.addStretch()
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn_cancel = QPushButton("取消")
-        btn_cancel.setObjectName("SecondaryBtn")
-        btn_cancel.clicked.connect(self.reject)
-        btn_ok = QPushButton("确认下载")
-        self.btn_ok = btn_ok
-        btn_ok.clicked.connect(self._on_confirm)
-        # 按钮上明示所选包大小：把最终确认信息推到离点击最近的位置
-        self.rb_nvidia50.toggled.connect(self._update_ok_label)
-        self._update_ok_label()
-        btn_layout.addWidget(btn_cancel)
-        btn_layout.addWidget(btn_ok)
-        layout.addLayout(btn_layout)
-
-    def _update_ok_label(self):
-        pkg = GPU_PACKAGES["nvidia50" if self.rb_nvidia50.isChecked() else "general"]
-        gb = pkg["size_bytes"] / (1024 ** 3)
-        self.btn_ok.setText(f"确认下载（约 {gb:.1f}GB）")
-
-    def _on_confirm(self):
-        if self.rb_nvidia50.isChecked():
-            self._gpu_type = "nvidia50"
-        else:
-            self._gpu_type = "general"
-        self.accept()
-
-    def get_gpu_type(self):
-        return self._gpu_type
-
-
-# ============================================================
-# 安装线程：后台执行 install_engine.install()
+# 安装线程：后台执行 install_engine_macos.install()
 # ============================================================
 
 class InstallWorker(QThread):
@@ -189,9 +76,8 @@ class InstallWorker(QThread):
     state_signal = Signal(str)              # 当前阶段名
     finished_signal = Signal(bool, str)     # (success, message)
 
-    def __init__(self, gpu_type="nvidia50"):
+    def __init__(self):
         super().__init__()
-        self.gpu_type = gpu_type
         self._cancel = False
 
     def request_cancel(self):
@@ -203,7 +89,7 @@ class InstallWorker(QThread):
     def run(self):
         # 延迟导入：装依赖/报错都在工作线程里处理，不阻塞主线程启动
         try:
-            from install_engine import install
+            from install_engine_macos import install
         except Exception as e:
             self.finished_signal.emit(False, f"加载安装模块失败: {e}")
             return
@@ -212,8 +98,8 @@ class InstallWorker(QThread):
             progress_cb=lambda p: self.progress_signal.emit(p),
             log_cb=lambda m: self.log_signal.emit(m),
             state_cb=lambda s: self.state_signal.emit(s),
-            gpu_type=self.gpu_type,
             cancel_cb=self.is_cancel_requested,
+            base_dir=os.path.dirname(os.path.abspath(__file__)),
         )
         # 成功但取消标志恰好置位的竞态：不往成功消息上挂「已取消」前缀
         if self._cancel and not success:
@@ -228,10 +114,9 @@ class InstallWorker(QThread):
 class InstallerWindow(QWidget):
     """安装界面：分阶段进度条 + 实时日志"""
 
-    def __init__(self, on_done_callback=None, gpu_type="nvidia50"):
+    def __init__(self, on_done_callback=None):
         super().__init__()
         self.on_done_callback = on_done_callback
-        self.gpu_type = gpu_type
         self._worker = None
         self._cancel_requested = False
         self._close_attempts = 0
@@ -265,8 +150,7 @@ class InstallerWindow(QWidget):
         h_text.setSpacing(2)
         title = QLabel("MamboTTS 引擎安装")
         title.setStyleSheet(f"color: {THEME['text']}; font-size: 17px; font-weight: 800; background: transparent;")
-        pkg_gb = GPU_PACKAGES.get(self.gpu_type, GPU_PACKAGES["nvidia50"])["size_bytes"] / (1024 ** 3)
-        subtitle = QLabel(f"首次使用需下载 GPT-SoVITS 整合包（约 {pkg_gb:.1f}GB），请保持网络畅通")
+        subtitle = QLabel(f"首次使用需下载 GPT-SoVITS 源码、依赖与模型（约 {_mac_download_gb():.1f}GB），请保持网络畅通")
         subtitle.setStyleSheet(f"color: {THEME['muted']}; font-size: 12px; background: transparent;")
         h_text.addWidget(title)
         h_text.addWidget(subtitle)
@@ -323,7 +207,7 @@ class InstallerWindow(QWidget):
         self.btn_install.setText("◐ 安装进行中...")
         self.progress_bar.setValue(0)
 
-        self._worker = InstallWorker(gpu_type=self.gpu_type)
+        self._worker = InstallWorker()
         self._worker.progress_signal.connect(self.on_progress)
         self._worker.log_signal.connect(self.on_log)
         self._worker.state_signal.connect(self.on_state)
@@ -392,12 +276,14 @@ class InstallerWindow(QWidget):
                 # 弹窗给常见原因清单，原文只进日志面板（截断显示）
                 brief = message if len(message) <= 300 else message[:300] + "…"
                 self.on_log(f"[错误] 安装失败详情：{message}")
+                reasons = (
+                    "1. 磁盘空间不足（需预留约 8GB+）\n"
+                    "2. 网络中断或镜像源不可达（重试可续传）\n"
+                    "3. 缺少 Xcode 命令行工具或合适版本的 Python\n\n"
+                )
                 QMessageBox.critical(
                     self, "安装失败",
-                    "安装未完成。常见原因：\n"
-                    "1. 磁盘空间不足（需预留约 30GB+）\n"
-                    "2. 网络中断或镜像源不可达（重试可续传）\n"
-                    "3. 杀毒软件拦截了解压/pip\n\n"
+                    "安装未完成。常见原因：\n" + reasons +
                     f"错误摘要：\n{brief}\n\n完整信息见上方安装日志。"
                 )
 
@@ -477,34 +363,29 @@ def main():
         _show_main_window()
         sys.exit(app.exec())
 
-    # 未安装：弹窗提示（用最大包估算，避免提示偏小导致中途盘满）
-    max_need_gb = max(p["size_bytes"] for p in GPU_PACKAGES.values()) * 3.6 / (1024 ** 3)
+    # 未安装：弹窗提示
+    from install_engine_macos import DISK_NEED_BYTES
+    msg = ("检测到 GPT-SoVITS 引擎尚未安装。\n\n"
+           "将自动下载 GPT-SoVITS 源码、安装推理依赖\n"
+           f"并下载模型（共约 {_mac_download_gb():.1f}GB，国内多源镜像，自动选最快），\n"
+           f"请预留约 {DISK_NEED_BYTES / 1024 ** 3:.0f}GB 磁盘空间。\n"
+           "macOS 使用 CPU 推理，合成速度较慢。\n\n"
+           "是否立即开始安装？")
     reply = QMessageBox.question(
-        None, "首次使用",
-        "检测到 GPT-SoVITS 引擎尚未安装。\n\n"
-        "安装需要下载约 8.2GB 的整合包（国内多源镜像，自动选最快），\n"
-        f"并预留约 {max_need_gb:.0f}GB 磁盘空间（含下载与解压产物）。\n"
-        "是否立即开始安装？",
+        None, "首次使用", msg,
         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
     )
     if reply == QMessageBox.No:
         sys.exit(0)
 
-    # 选择显卡型号，决定下载哪个整合包
-    gpu_dialog = GpuSelectionDialog()
-    if gpu_dialog.exec() != QDialog.Accepted:
-        sys.exit(0)
-    gpu_type = gpu_dialog.get_gpu_type()
-
     # 启动安装界面；安装完成后同进程直接切换到主界面
-    installer = InstallerWindow(gpu_type=gpu_type)
+    installer = InstallerWindow()
 
     def on_done():
         _show_main_window()
 
     installer.on_done_callback = on_done
     installer.show()
-    # 选完显卡后直接开始下载，无需再手动点击"开始安装"
     installer.start_install()
 
     sys.exit(app.exec())

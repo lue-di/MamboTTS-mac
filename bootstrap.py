@@ -42,9 +42,13 @@ def _project_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+UI_FONT = "PingFang SC"
+MONO_FONT = "Menlo"
+
+
 def _venv_python():
     base = _project_dir()
-    return os.path.join(base, ".venv", "Scripts", "python.exe")
+    return os.path.join(base, ".venv", "bin", "python")
 
 
 def _venv_ready():
@@ -70,33 +74,14 @@ def _system_python():
 
     不仅验证命令存在，还验证版本：README 宣称最低 3.10，且旧版 PySide6
     根本没有 3.8/3.9 的 wheel——不预检会一路走完 venv 创建，到 pip
-    装依赖才报晦涩错误。默认 python/py 版本不够时，再枚举 py 启动器
-    管理的多版本（py -0p），避免「装了 3.11 但默认是 3.9」的机器被误判。"""
-    for cmd in ("py", "python"):
+    装依赖才报晦涩错误。macOS 自带 /usr/bin/python3 是 3.9，需优先找带版本号的 python3.x。"""
+    # 当前解释器本身合格就直接用（.command 已帮忙选好）
+    if sys.version_info >= (3, 10):
+        return sys.executable
+    for cmd in ("python3.12", "python3.11", "python3.13", "python3.10", "python3", "python"):
         ok = _python_cmd_if_ok(cmd)
         if ok:
             return ok
-    # py 启动器多版本枚举：行形如 "  -V:3.11 *        C:\Program Files\Python311\python.exe"
-    try:
-        out = subprocess.check_output(["py", "-0p"], stderr=subprocess.STDOUT,
-                                      timeout=5).decode("utf-8", "replace")
-        best = None
-        for line in out.splitlines():
-            # 路径可能含空格，不能只取 \S+：用分隔符切出 " -V:x.y " 之后的部分
-            m = re.search(r"-V:(\d+)\.(\d+)[^ ]*\s+(.+)$", line)
-            if not m:
-                continue
-            if (int(m.group(1)), int(m.group(2))) >= (3, 10):
-                cand = m.group(3).strip().strip('"')
-                if cand.lower().endswith(".exe"):
-                    best = cand
-                    break  # py -0p 按版本降序列出，第一个即最新
-        if best:
-            ok = _python_cmd_if_ok(best)
-            if ok:
-                return ok
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
     return None
 
 
@@ -132,15 +117,15 @@ class BootstrapWindow:
         header.pack(fill="x")
         header.pack_propagate(False)
         logo = tk.Label(header, text="M", bg=ACCENT, fg="#0B0B0D",
-                        font=("Segoe UI", 15, "bold"), width=3, height=1)
+                        font=(UI_FONT, 15, "bold"), width=3, height=1)
         logo.pack(side="left", padx=(14, 10), pady=12)
         tk.Label(
             header, text="MamboTTS", bg=CARD, fg=TEXT,
-            font=("Segoe UI", 15, "bold")
+            font=(UI_FONT, 15, "bold")
         ).pack(side="left", pady=10)
         tk.Label(
             header, text="正在准备运行环境...", bg=CARD, fg=MUTED,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(side="left", padx=8, pady=10, anchor="s")
 
         # 主体
@@ -152,7 +137,7 @@ class BootstrapWindow:
         stage_frame.pack(fill="x", pady=(0, 8))
         self.stage_label = tk.Label(
             stage_frame, text="准备中...", bg=BG, fg=TEXT,
-            font=("Segoe UI", 12, "bold")
+            font=(UI_FONT, 12, "bold")
         )
         self.stage_label.pack(anchor="w")
 
@@ -165,26 +150,26 @@ class BootstrapWindow:
         # 进度数值
         self.progress_label = tk.Label(
             body, text="0%", bg=BG, fg=MUTED,
-            font=("Segoe UI", 9)
+            font=(UI_FONT, 9)
         )
         self.progress_label.pack(anchor="e")
 
         # 日志面板
         tk.Label(
             body, text="安装日志:", bg=BG, fg=TEXT,
-            font=("Segoe UI", 10)
+            font=(UI_FONT, 10)
         ).pack(anchor="w", pady=(8, 4))
 
         log_frame = tk.Frame(body, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         log_frame.pack(fill="both", expand=True)
         self.log_view = scrolledtext.ScrolledText(
             log_frame, wrap="word", bg=CARD, fg=MUTED, insertbackground=TEXT,
-            font=("Consolas", 9), relief="flat", padx=8, pady=6,
+            font=(MONO_FONT, 9), relief="flat", padx=8, pady=6,
             height=10
         )
         self.log_view.pack(fill="both", expand=True)
         # 语义标签（黑白灰：错误白字加粗、警告中灰，不飘红绿）
-        self.log_view.tag_configure("err", foreground="#F4F4F5", font=("Consolas", 9, "bold"))
+        self.log_view.tag_configure("err", foreground="#F4F4F5", font=(MONO_FONT, 9, "bold"))
         self.log_view.tag_configure("warn", foreground="#A1A1AA")
         self.log_view.configure(state="disabled")
 
@@ -193,7 +178,7 @@ class BootstrapWindow:
         btn_frame.pack(fill="x", padx=20, pady=(0, 16))
         self.cancel_btn = tk.Button(
             btn_frame, text="取消", bg=FIELD, fg=TEXT, activebackground="#26262C",
-            font=("Segoe UI", 10), relief="flat", padx=16, pady=4,
+            font=(UI_FONT, 10), relief="flat", padx=16, pady=4,
             command=self._on_cancel
         )
         self.cancel_btn.pack(side="right")
@@ -288,7 +273,7 @@ class BootstrapWindow:
                 self._show_error_and_exit(
                     "未检测到 Python",
                     "请安装 Python 3.10 或更高版本:\nhttps://www.python.org/downloads/\n\n"
-                    "安装时请勾选 'Add Python to PATH'。"
+                    "也可用 Homebrew 安装：brew install python@3.11 python-tk@3.11"
                 )
                 return
 
@@ -326,15 +311,7 @@ class BootstrapWindow:
                         self._cur_proc = proc
                     while proc.poll() is None:
                         if self._canceled:
-                            if sys.platform == "win32":
-                                try:
-                                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                                   timeout=5)
-                                except Exception:
-                                    proc.terminate()
-                            else:
-                                proc.terminate()
+                            proc.terminate()
                             break
                         time.sleep(0.2)
                     rc = proc.wait()
@@ -348,8 +325,8 @@ class BootstrapWindow:
                     self.append_log(f"[错误] 创建虚拟环境失败: {e}")
                     self._show_error_and_exit(
                         "创建虚拟环境失败",
-                        f"可能原因:\n1. 权限不足（请用管理员身份运行）\n2. Python 安装不完整\n\n"
-                        f"详细错误: {e}"
+                        "可能原因:\n1. 项目目录无写权限\n2. Python 安装不完整（缺少 venv 模块）\n\n"
+                        + f"详细错误: {e}"
                     )
                     return
                 finally:
@@ -363,19 +340,12 @@ class BootstrapWindow:
 
             # ===== 阶段 2: 安装依赖 =====
             self.set_stage("阶段 3/4: 安装依赖")
-            # 先预下载两个大 wheel（PySide6-Addons 168MB / Essentials 77MB），
-            # 用 urllib 流式下载显示实时百分比（pip 自身不吐字节进度）
             venv_python = _venv_python()
             req_path = os.path.join(_project_dir(), "requirements.txt")
-            wheelhouse = os.path.join(_project_dir(), "wheelhouse")
 
-            self.append_log("正在准备依赖（PySide6 大包预下载，实时显示进度）...")
-            self.append_log("这可能需要 1-3 分钟，取决于带宽...")
-            self._prefetch_big_wheels(wheelhouse)
-            if self._check_canceled():
-                return
+            self.append_log("正在准备依赖（PySide6 等），可能需要 1-3 分钟，取决于带宽...")
 
-            # 进度条转确定模式（预下载已在 35-70% 区间实时走）
+            # 进度条转确定模式
             def _to_determinate():
                 self.progress.stop()
                 self.progress.configure(mode="determinate")
@@ -400,11 +370,6 @@ class BootstrapWindow:
 
             self.append_log("依赖安装完成")
             self.set_progress(90)
-            # 预下载缓存使命完成，清理省磁盘
-            try:
-                shutil.rmtree(wheelhouse, ignore_errors=True)
-            except Exception:
-                pass
 
             # ===== 阶段 3: 启动主程序 =====
             self.set_stage("阶段 4/4: 启动主程序")
@@ -447,178 +412,15 @@ class BootstrapWindow:
                 f"引导过程发生异常:\n{type(e).__name__}: {e}"
             )
 
-    class _PrefetchCancel(Exception):
-        """预下载被用户取消的内部信号（避免吞真实 Ctrl-C）"""
-
-    # PySide6 大 wheel（占依赖体积 95%+）：预下载显示实时进度。
-    # 版本与 requirements.txt 的 >= 约束对齐到当前最新；若日后 PyPI 出新版，
-    # pip 会忽略本地旧 wheel 走网络（功能正确，仅预下载失效），不会装错。
-    _BIG_WHEELS = [("PySide6-Addons", "6.11.2"), ("PySide6-Essentials", "6.11.2")]
-
-    def _prefetch_big_wheels(self, wheel_dir):
-        """用 urllib 流式预下载 PySide6 两个大 wheel（约 245MB），
-        进度实时更新（MB/百分比/速度）。pip 自身不吐字节级进度。
-
-        结构（muse 审核骨架）：
-        1) 先解析全部 meta（url/size/filename/sha256）
-        2) 动态算总字节做加权进度
-        3) 逐包下载：sha256+size 双校验，节流 200ms 更新 UI
-        4) 任何失败/取消都清理 .part 并让 pip 接管，绝不中断安装
-        """
-        import hashlib
-        import json as _json
-        import urllib.request as _urlreq
-        try:
-            os.makedirs(wheel_dir, exist_ok=True)
-        except OSError as e:
-            self.append_log(f"[警告] 无法创建预下载目录（{e}），交给 pip")
-            return True
-
-        # 阶段 A：解析 meta（拿 url/size/真实文件名/sha256）
-        metas = []
-        arch = "win_amd64"
-        py_tag = "cp%d%d" % sys.version_info[:2]
-        for pkg, ver in self._BIG_WHEELS:
-            if self._canceled:
-                return False
-            try:
-                api = f"https://pypi.org/pypi/{pkg}/{ver}/json"
-                req = _urlreq.Request(api, headers={"User-Agent": "MamboTTS-bootstrap/1.0"})
-                with _urlreq.urlopen(req, timeout=30) as r:
-                    meta = _json.loads(r.read().decode("utf-8"))
-                cands = [f for f in meta["urls"]
-                         if f["filename"].lower().endswith(arch + ".whl")]
-                pick = None
-                for f in cands:  # 精确 cpXY-cpXY 优先（文件名形如 pkg-ver-cp311-cp311-win_amd64）
-                    fn_low = f["filename"].lower()
-                    if f"{py_tag}-{py_tag}" in fn_low or fn_low.startswith(f"{py_tag}-"):
-                        pick = f
-                        break
-                if pick is None:
-                    for f in cands:  # 退而求其次 abi3 通包
-                        if "abi3" in f["filename"].lower():
-                            pick = f
-                            break
-                if pick is None:
-                    self.append_log(f"[警告] 未找到 {pkg} 的 {arch} wheel，交给 pip")
-                    continue
-                metas.append({
-                    "pkg": pkg, "url": pick["url"], "size": pick["size"],
-                    "fname": pick["filename"],
-                    "sha256": (pick.get("digests") or {}).get("sha256", ""),
-                })
-            except Exception as e:
-                self.append_log(f"[警告] 解析 {pkg} 下载地址失败（{e}），交给 pip")
-                continue
-
-        if not metas:
-            return True
-        total_big = sum(m["size"] for m in metas if m["size"]) or 245_000_000
-        base_progress = 35.0
-        span_total = 35.0
-        acc_span = 0.0
-        last_ui = 0.0
-
-        # 阶段 B：逐包流式下载
-        for m in metas:
-            if self._canceled:
-                return False
-            size = m["size"]
-            target = os.path.join(wheel_dir, m["fname"])
-            # 已存在且 size+sha256 全过 → 秒跳（包 try 防 TOCTOU/权限）
-            try:
-                _exists_ok = size and os.path.exists(target) and os.path.getsize(target) == size
-            except OSError:
-                _exists_ok = False
-            if _exists_ok:
-                if m["sha256"]:
-                    try:
-                        h = hashlib.sha256()
-                        with open(target, "rb") as f:
-                            for c in iter(lambda: f.read(1 << 20), b""):
-                                h.update(c)
-                        if h.hexdigest() == m["sha256"]:
-                            self.append_log(f"[状态] {m['pkg']} wheel 已存在（校验通过），跳过")
-                            acc_span += span_total * size / total_big
-                            continue
-                    except Exception:
-                        pass
-                else:
-                    self.append_log(f"[状态] {m['pkg']} wheel 已存在，跳过")
-                    acc_span += span_total * size / total_big
-                    continue
-            tmp = target + ".part"
-            self.append_log(f"[状态] 预下载 {m['pkg']}"
-                             f"（{(size or 0) / (1024*1024):.0f}MB）...")
-            done = 0
-            t0 = time.time()
-            ok = False
-            try:
-                dreq = _urlreq.Request(m["url"],
-                                       headers={"User-Agent": "MamboTTS-bootstrap/1.0"})
-                with _urlreq.urlopen(dreq, timeout=60) as resp, open(tmp, "wb") as f:
-                    h = hashlib.sha256()
-                    while True:
-                        if self._canceled:
-                            raise self._PrefetchCancel()
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        h.update(chunk)
-                        done += len(chunk)
-                        now = time.time()
-                        if now - last_ui > 0.2 and size:
-                            last_ui = now
-                            pct = min(done * 100.0 / size, 99.9)
-                            speed = done / (1024 * 1024) / max(now - t0, 0.1)
-                            span = span_total * size / total_big
-                            self.set_progress(base_progress + acc_span + pct / 100.0 * span)
-                            self.set_stage(
-                                f"阶段 3/4: 安装依赖 · {m['pkg']} "
-                                f"{done / (1024*1024):.1f}/{size / (1024*1024):.0f}MB"
-                                f"（{pct:.0f}%） 速度 {speed:.1f}MB/s"
-                            )
-                if size and done != size:
-                    raise IOError(f"下载不完整 {done}/{size}")
-                if m["sha256"] and h.hexdigest() != m["sha256"]:
-                    raise IOError("SHA256 校验失败")
-                os.replace(tmp, target)
-                ok = True
-                acc_span += span_total * size / total_big
-                self.append_log(f"[状态] {m['pkg']} 预下载完成（{size / (1024*1024):.0f}MB）")
-            except self._PrefetchCancel:
-                # 用户取消：清 .part，返回 False → 外层终止安装
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-                return False
-            except Exception as e:
-                self.append_log(f"[警告] {m['pkg']} 预下载失败（{e}），交给 pip")
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-        self.set_progress(base_progress + acc_span)
-        return True
-
-
     def _pip_install(self, venv_python, req_path, use_mirror=True):
         """用 venv python -m pip 安装依赖，实时输出日志，支持取消终止"""
         # 走 python -m pip 而非直接调 pip.exe：pip.exe 包装器损坏或被杀软
         # 拦截是常见故障，此路径不受影响
-        wheelhouse = os.path.join(_project_dir(), "wheelhouse")
-        has_local = os.path.isdir(wheelhouse) and any(
-            f.endswith(".whl") for f in os.listdir(wheelhouse))
         if os.path.exists(req_path):
             cmd = [venv_python, "-m", "pip", "install", "-r", req_path]
         else:
             # requirements.txt 缺失时的显式回退（旧版误把 req_path 传给 -r，必失败）
             cmd = [venv_python, "-m", "pip", "install", "PySide6", "requests"]
-        if has_local:
-            # 优先用本地预下载的大 wheel（pip 不再重复下载 245MB）
-            cmd += ["--find-links", wheelhouse, "--prefer-binary"]
         if use_mirror:
             cmd += ["-i", "https://mirrors.aliyun.com/pypi/simple/"]
 
@@ -643,17 +445,9 @@ class BootstrapWindow:
             cur_pkg = "（解析依赖中...）"
             for line in proc.stdout:
                 if self._canceled:
-                    # Windows 上 terminate() 只杀 pip 本体；pip 偶发的子进程
-                    # （wheel 编译/下载）用进程树清理兜底，避免占用 .venv 文件
-                    if sys.platform == "win32":
-                        try:
-                            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                           timeout=5)
-                        except Exception:
-                            proc.terminate()
-                    else:
-                        proc.terminate()
+                    # terminate() 只杀 pip 本体；pip 偶发的子进程
+                    # （wheel 编译/下载）可能残留，下次安装会覆盖
+                    proc.terminate()
                     break
                 line = line.rstrip()
                 if line:
@@ -694,14 +488,14 @@ def _spawn_launcher(venv_python, launcher_path):
     返回 True=正常运行；False=立即退出（调用方决定如何提示）。
     """
     err_log = os.path.join(_project_dir(), "launcher_error.log")
-    creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         with open(err_log, "wb") as errf:
             proc = subprocess.Popen(
                 [venv_python, launcher_path],
                 stdout=errf,
                 stderr=subprocess.STDOUT,
-                creationflags=creation_flags,
+                # 脱离终端会话，关闭 .command 的终端窗口不会连带杀掉主程序
+                start_new_session=True,
             )
             time.sleep(2.0)
             return proc.poll() is None

@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import signal
 import wave
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 # 导入推理客户端与共用模块（主题/文件命名/配置/历史组件均已解耦）
 from inference import TTSClient
-from engine_contract import API_PORT
+from engine_contract import API_PORT, LAUNCH_SCRIPT
 from theme import THEME, base_qss, status_style, log_color, apply_theme, current_theme_name
 from file_naming import filename_from_text, sanitize_stem, ensure_wav_suffix, unique_path, resolve_output_dir
 from config_store import load as load_config_file, save as save_config_file
@@ -255,10 +256,10 @@ class MamboTTSApp(QMainWindow):
         if not os.path.exists(gsv_dir):
             self._engine_installed = False
             self._engine_timeout_logged = True  # 无需再走超时分支
-            self.log_line.emit("ERROR", "GPT-SoVITS 未安装，请先运行 MamboTTS.bat 完成一键安装。")
+            self.log_line.emit("ERROR", f"GPT-SoVITS 未安装，请先运行 {LAUNCH_SCRIPT} 完成一键安装。")
             self._set_engine_status("error", "✕ 未安装引擎")
-            self._set_action_status("error", "请先运行 MamboTTS.bat 安装引擎（约 8GB，一次性）")
-            self.btn_generate.setToolTip("请先运行 MamboTTS.bat 安装引擎")
+            self._set_action_status("error", f"请先运行 {LAUNCH_SCRIPT} 安装引擎（一次性）")
+            self.btn_generate.setToolTip(f"请先运行 {LAUNCH_SCRIPT} 安装引擎")
             # 当前窗口内直接给安装入口（launcher 未拦截到的调试路径也能自救）
             self.btn_engine_retry.setText("打开安装引导")
             self.btn_engine_retry.setVisible(True)
@@ -267,23 +268,18 @@ class MamboTTSApp(QMainWindow):
             return
 
         try:
-            # 用当前 Python 启动 run_engine.py，不在新窗口里跑（避免黑窗）
-            # creationflags=CREATE_NO_WINDOW 让 Windows 不弹黑窗
-            # 新进程组：便于关闭时按进程树 kill 孙子进程（api.py）
-            creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-            if sys.platform == "win32":
-                creation_flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            # 用当前 Python 启动 run_engine.py，不在新窗口里跑
+            # start_new_session 让子进程自成进程组（pgid == pid），关闭时 killpg 回收孙子进程（api.py）
             self.engine_proc = subprocess.Popen(
                 [sys.executable, run_engine_path],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                creationflags=creation_flags,
+                start_new_session=True,
                 bufsize=1,
                 universal_newlines=True,
                 encoding="utf-8",
                 errors="replace",
-                # 强制子进程（含其孙进程 api.py，经环境继承）以 UTF-8 输出：
-                # Windows 默认按 cp936 写管道，父端按 utf-8 解码会把中文日志刷成乱码
+                # 强制子进程（含其孙进程 api.py，经环境继承）以 UTF-8 输出，父端按 utf-8 解码
                 env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
             )
             self._engine_spawned = True
@@ -466,7 +462,7 @@ class MamboTTSApp(QMainWindow):
             self._set_engine_status("busy", f"◐ 引擎启动中... ({elapsed:.0f}s)")
         elif not self._engine_timeout_logged:
             self._engine_timeout_logged = True
-            self.log_line.emit("ERROR", "引擎未运行且本地无可用启动器，请通过 MamboTTS.bat 启动或检查 run_engine.py。")
+            self.log_line.emit("ERROR", f"引擎未运行且本地无可用启动器，请通过 {LAUNCH_SCRIPT} 启动或检查 run_engine.py。")
             self._set_engine_status("error", "✕ 引擎启动器缺失")
             self._api_check_timer.setInterval(5000)
 
@@ -500,14 +496,12 @@ class MamboTTSApp(QMainWindow):
             if os.path.exists(launcher_path):
                 self.append_log("INFO", "引擎未安装，正在打开安装引导程序...")
                 try:
-                    creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                    subprocess.Popen([sys.executable, launcher_path],
-                                     creationflags=creation_flags)
+                    subprocess.Popen([sys.executable, launcher_path])
                     return
                 except Exception as e:
                     self.append_log("ERROR", f"无法打开安装引导：{e}")
             else:
-                self.append_log("ERROR", "未找到 launcher.py，请重新下载整合包或运行 MamboTTS.bat。")
+                self.append_log("ERROR", f"未找到 launcher.py，请重新下载整合包或运行 {LAUNCH_SCRIPT}。")
             return
         if self.engine_proc is not None and self.engine_proc.poll() is None:
             self.append_log("INFO", "引擎进程仍在运行，无需重启，继续等待…")
@@ -794,7 +788,8 @@ class MamboTTSApp(QMainWindow):
             pr.setPen(Qt.NoPen)
             pr.drawRoundedRect(pix.rect(), px * 0.18, px * 0.18)
             pr.setPen(QColor(THEME["surface2"]))
-            pr.setFont(QFont("Segoe UI Emoji", int(px * 0.62)))
+            pr.setFont(QFont("Helvetica Neue",
+                             int(px * 0.62)))
             pr.drawText(pix.rect(), Qt.AlignCenter, "M")
             pr.end()
             icon.addPixmap(pix)
@@ -1032,11 +1027,10 @@ class MamboTTSApp(QMainWindow):
         if hasattr(self, "player"):
             self.player.stop()
         # 终止引擎子进程（随客户端关闭而关闭）
-        # 用 taskkill /T /F 按进程树关闭，确保孙子进程 api.py 也被回收，
+        # 按进程组关闭，确保孙子进程 api.py 也被回收，
         # 避免 9880 端口被孤儿进程占用导致下次启动失败
         if self.engine_proc:
             # 注意：即使根进程已退出也要按树清理——api.py 孙子进程可能还活着占 9880。
-            # Python 持有进程句柄期间 Windows 不会复用该 pid，taskkill 不会误杀。
             self.append_log("INFO", "正在关闭引擎子进程...")
             try:
                 self._terminate_engine_tree(self.engine_proc.pid)
@@ -1044,7 +1038,8 @@ class MamboTTSApp(QMainWindow):
                 try:
                     self.engine_proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    # 兜底：非 Windows 平台或 taskkill 失败时直接终止进程树根
+                    # 兜底：优雅退出超时时强杀
+                    self._terminate_engine_tree(self.engine_proc.pid, force=True)
                     self.engine_proc.terminate()
                     try:
                         self.engine_proc.wait(timeout=2)
@@ -1055,28 +1050,21 @@ class MamboTTSApp(QMainWindow):
             except Exception as e:
                 self.append_log("WARNING",
                                 f"关闭引擎子进程异常: {e}。若下次启动报 9880 端口占用，"
-                                f"请手动结束残留的 runtime/python.exe 进程。")
+                                f"请手动结束残留的 GPT-SoVITS runtime 中的 python 进程。")
             self.engine_proc = None
         # 保存配置
         self.save_config()
         super().closeEvent(event)
 
-    def _terminate_engine_tree(self, pid):
-        """按进程树终止引擎子进程及其所有派生进程（含孙子进程 api.py）。
+    def _terminate_engine_tree(self, pid, force=False):
+        """向引擎进程组发信号，终止引擎子进程及其派生进程（含孙子进程 api.py）。
 
-        Windows 用 taskkill /T /F <pid>；非 Windows 由调用方 terminate 兜底。
-        静默处理失败，由调用方兜底。
+        启动时 start_new_session，pgid == pid；根进程已退出但 api.py 仍在时同样有效。
+        默认 SIGTERM 让 uvicorn 优雅退出，force=True 时 SIGKILL。静默处理失败，由调用方兜底。
         """
-        if sys.platform != "win32":
-            return
         try:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-        except Exception:
+            os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
+        except OSError:
             pass
 
     # ============ 合成流程 ============
@@ -1517,18 +1505,12 @@ class MamboTTSApp(QMainWindow):
             self.append_log("WARNING", f"目录不存在：{folder_path}")
             return
         try:
-            if sys.platform == "win32":
-                # 若当前文件已存在，直接让资源管理器选中它，免去长文件名下翻找。
-                # 注意 /select, 与路径必须是同一个参数（拆成两个 explorer 不识别）
+            if sys.platform == "darwin":
+                # 文件已存在则在访达中选中它，免去长文件名下翻找
                 if os.path.exists(save_path):
-                    subprocess.Popen(
-                        ["explorer", f"/select,{os.path.normpath(save_path)}"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
+                    subprocess.Popen(["open", "-R", save_path])
                 else:
-                    os.startfile(folder_path)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", folder_path])
+                    subprocess.Popen(["open", folder_path])
             else:
                 subprocess.Popen(["xdg-open", folder_path])
         except Exception as e:

@@ -7,6 +7,10 @@ inference.py 里、被 run_engine.py 反向 import，容易让人误以为启动
 
 注意：GPT-SoVITS 目录是云端下载的整合包，本文件不修改它，只约定调用契约。
 """
+import sys
+
+# 面向用户的一键启动入口文件名（提示文案引用）
+LAUNCH_SCRIPT = "MamboTTS.command"
 
 # GPT-SoVITS api.py 的 dict_language 支持的语种，用于客户端侧预校验，
 # 避免传入不支持的语种触发服务端 KeyError → HTTP 500（对应上游 B10 防御）
@@ -19,12 +23,12 @@ SUPPORTED_LANGS = {
 }
 
 # 默认参考音频转写文本：必须与 models/refer.wav 内容一字不差。
-# 仅在此处定义一份，inference/run_engine/install_engine 从这里导入，
+# 仅在此处定义一份，inference/run_engine/install_engine_macos 从这里导入，
 # 避免多处副本漂移（ref_text 与音频不匹配会静默劣化克隆音色）。
 DEFAULT_REF_TEXT = "大家好，欢迎来到我的频道，今天给大家分享一个有趣的内容"
 
 # 曼波音色模型清单（相对 models/ 目录的文件名）。
-# run_engine 启动、install_engine 生成 go-api-mambo.bat、launcher 安装检测
+# run_engine 启动、install_engine_macos 生成 go-api-mambo 启动脚本、launcher 安装检测
 # 都从这里取，消灭「模型改名要改三处」的隐患。
 SOVITS_MODEL = "manbo_e8_s168.pth"
 GPT_MODEL = "manbo-e10.ckpt"

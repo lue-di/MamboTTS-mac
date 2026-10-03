@@ -97,8 +97,9 @@ def apply_theme(name: str) -> str:
     _current_theme_name = name
     return base_qss()
 
-FONT_FAMILY = "'Segoe UI', 'Microsoft YaHei', sans-serif"
-MONO_FAMILY = "Consolas, 'Noto Sans Mono', monospace"
+# 字体回退链：苹方优先，未安装的字体 Qt 会自动跳过
+FONT_FAMILY = "'.AppleSystemUIFont', 'PingFang SC', sans-serif"
+MONO_FAMILY = "Menlo, monospace"
 
 # 状态文本符号（代码里拼到文案前）：圆点/符号即状态
 STATUS_SYMBOL = {

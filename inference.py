@@ -3,7 +3,7 @@ import logging
 import requests
 
 from engine_contract import (
-    SUPPORTED_LANGS, DEFAULT_REF_TEXT, CUT_PUNC, DEFAULT_API_URL, REF_WAV,
+    SUPPORTED_LANGS, DEFAULT_REF_TEXT, CUT_PUNC, DEFAULT_API_URL, REF_WAV, LAUNCH_SCRIPT,
 )  # 契约常量单一来源（engine_contract.py），这里透传保持旧引用兼容
 
 logger = logging.getLogger("mambotts.inference")
@@ -252,7 +252,7 @@ class TTSClient:
         return False, ("本地 GPT-SoVITS 引擎尚未就绪，无法合成配音。\n"
                        "引擎通常在客户端启动后 10-30 秒内自动上线（看顶部状态灯）；\n"
                        "若状态灯显示失败/超时，可点击旁边的「↻ 重启引擎」；\n"
-                       "若从未安装过引擎，请通过 MamboTTS.bat 完成一键安装。")
+                       f"若从未安装过引擎，请通过 {LAUNCH_SCRIPT} 完成一键安装。")
 
 
 if __name__ == "__main__":

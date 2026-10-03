@@ -5,6 +5,7 @@ import subprocess
 
 from engine_contract import (
     DEFAULT_REF_TEXT, SOVITS_MODEL, GPT_MODEL, REF_WAV, API_HOST, API_PORT,
+    LAUNCH_SCRIPT,
 )
 
 
@@ -12,15 +13,22 @@ def _project_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def runtime_python(gsv_dir):
+    """引擎内置 Python 解释器路径。
+
+    安装器在 runtime/ 下创建的 venv（runtime/bin/python）。"""
+    return os.path.join(gsv_dir, "runtime", "bin", "python")
+
+
 def engine_paths(base=None):
-    """集中返回引擎与模型文件路径，install_engine 生成 bat 时也复用同一清单。"""
+    """集中返回引擎与模型文件路径，install_engine_macos 生成启动脚本时也复用同一清单。"""
     base = base or _project_dir()
     gsv_dir = os.path.join(base, "GPT-SoVITS")
     models_dir = os.path.join(base, "models")
     return {
         "gsv_dir": gsv_dir,
         "models_dir": models_dir,
-        "python_exe": os.path.join(gsv_dir, "runtime", "python.exe"),
+        "python_exe": runtime_python(gsv_dir),
         "api_py": os.path.join(gsv_dir, "api.py"),
         "sovits": os.path.join(models_dir, SOVITS_MODEL),
         "gpt": os.path.join(models_dir, GPT_MODEL),
@@ -60,7 +68,7 @@ def main():
         print("[错误] 引擎文件不完整，无法启动：")
         for item in missing:
             print(f"  - {item}")
-        print("请通过 MamboTTS.bat 完成安装，或确认整合包/模型文件放置正确。")
+        print(f"请通过 {LAUNCH_SCRIPT} 完成安装，或确认引擎与模型文件放置正确。")
         sys.exit(1)
 
     # 端口占用预检：若已被其他引擎实例或无关程序占住，明确提示，
@@ -72,11 +80,14 @@ def main():
         sys.exit(3)
 
     print("====================================================")
-    print("         MamboTTS 本地 GPU 语音推理引擎启动程序")
+    print("         MamboTTS 本地语音推理引擎启动程序")
     print("====================================================")
     print(f"[状态] 正在加载 SoVITS 模型: {os.path.basename(p['sovits'])}")
     print(f"[状态] 正在加载 GPT 模型: {os.path.basename(p['gpt'])}")
     print(f"[提示] 推理服务即将启动在: http://{API_HOST}:{API_PORT}")
+    if sys.platform == "darwin":
+        # 上游 GPT-SoVITS 在 macOS 上统一走 CPU 推理（MPS 存在音质问题被官方弃用）
+        print("[提示] macOS 使用 CPU 推理，合成速度会比 NVIDIA 显卡慢，请耐心等待。")
     print("====================================================\n")
 
     # 构建启动命令（旧版 api.py 支持 -s/-g/-dr/-dt/-dl 参数）
@@ -95,7 +106,10 @@ def main():
     # 在 GPT-SoVITS 目录下运行 API，保证工作目录正确
     try:
         proc = subprocess.Popen(cmd, cwd=p["gsv_dir"])
-        proc.wait()
+        rc = proc.wait()
+        if rc != 0:
+            # 透传 api.py 的退出码：GUI 据此显示「引擎进程已退出 (code=…)」而不是误报 0
+            sys.exit(rc)
     except KeyboardInterrupt:
         print("\n[状态] 推理服务已关闭。")
     except Exception as e:
